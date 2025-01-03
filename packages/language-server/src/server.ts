@@ -14,6 +14,7 @@ import type {
 	MyLspDataHackPubifyRequestParams,
 } from './util/index.js'
 import { toCore, toLS } from './util/index.js'
+import { LspFsWatcher } from './util/LspFsWatcher.js'
 
 export * from './util/types.js'
 
@@ -28,9 +29,9 @@ const { cache: cacheRoot } = envPaths('spyglassmc')
 
 const connection = ls.createConnection()
 let capabilities!: ls.ClientCapabilities
+let fsWatcher: LspFsWatcher | undefined
 let workspaceFolders!: ls.WorkspaceFolder[]
 let hasShutdown = false
-let progressReporter: ls.WorkDoneProgressReporter | undefined
 
 const externals = NodeJsExternals
 const logger: core.Logger = {
@@ -52,6 +53,7 @@ connection.onInitialize(async (params) => {
 
 	capabilities = params.capabilities
 	workspaceFolders = params.workspaceFolders ?? []
+	const projectRoots = workspaceFolders.map(f => core.fileUtil.ensureEndingSlash(f.uri))
 
 	if (initializationOptions?.inDevelopmentMode) {
 		await new Promise((resolve) => setTimeout(resolve, 3000))
@@ -64,6 +66,16 @@ connection.onInitialize(async (params) => {
 		await locales.loadLocale(params.locale)
 	} catch (e) {
 		logger.error('[loadLocale]', e)
+	}
+
+	if (capabilities.workspace?.didChangeWatchedFiles?.dynamicRegistration) {
+		// Initializes LspFsWatcher when client supports didChangeWatchedFiles notifications.
+		fsWatcher = new LspFsWatcher(projectRoots, logger)
+			.on('ready', () => logger.info('[FsWatcher] ready'))
+			.on('add', (uri) => logger.info('[FsWatcher] added', uri))
+			.on('change', (uri) => logger.info('[FsWatcher] changed', uri))
+			.on('unlink', (uri) => logger.info('[FsWatcher] unlinked', uri))
+			.on('error', (e) => logger.error('[FsWatcher]', e))
 	}
 
 	try {
@@ -84,7 +96,8 @@ connection.onInitialize(async (params) => {
 				cacheRoot: fileUtil.ensureEndingSlash(url.pathToFileURL(cacheRoot).toString()),
 				externals,
 				initializers: [mcdoc.initialize, je.initialize],
-				projectRoots: workspaceFolders.map(f => core.fileUtil.ensureEndingSlash(f.uri)),
+				projectRoots,
+				projectRootsWatcher: fsWatcher,
 			},
 		})
 		service.project.on('documentErrored', async ({ errors, uri, version }) => {
@@ -151,6 +164,16 @@ connection.onInitialize(async (params) => {
 })
 
 connection.onInitialized(async () => {
+	if (capabilities.workspace?.didChangeWatchedFiles?.dynamicRegistration) {
+		const watcherDisposable = await connection.client.register(
+			ls.DidChangeWatchedFilesNotification.type,
+			{
+				watchers: [{ globPattern: '**/*' }],
+			},
+		)
+		fsWatcher!.setLspListener(watcherDisposable)
+	}
+
 	await service.project.ready()
 	if (capabilities.workspace?.workspaceFolders) {
 		connection.workspace.onDidChangeWorkspaceFolders(async () => {
@@ -172,7 +195,10 @@ connection.onDidCloseTextDocument(({ textDocument: { uri } }) => {
 	service.project.onDidClose(uri)
 })
 
-connection.workspace.onDidRenameFiles(({}) => {})
+connection.onDidChangeWatchedFiles((params) => {
+	logger.info('[FsWatcher] raw LSP changes', params)
+	void fsWatcher!.onLspDidChangeWatchedFiles(params)
+})
 
 connection.onCodeAction(async ({ textDocument: { uri }, range }) => {
 	const docAndNode = await service.project.ensureClientManagedChecked(uri)

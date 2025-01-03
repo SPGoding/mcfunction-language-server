@@ -72,7 +72,6 @@ export interface ExternalFileSystem {
 	showFile(path: FsLocation): Promise<void>
 	stat(location: FsLocation): Promise<{ isDirectory(): boolean; isFile(): boolean }>
 	unlink(location: FsLocation): Promise<void>
-	watch(locations: FsLocation[], options: { usePolling?: boolean }): FsWatcher
 	/**
 	 * @param options `mode` - File mode bit mask (e.g. `0o775`).
 	 */
@@ -87,22 +86,3 @@ export interface ExternalFileSystem {
  * A file URI string or a URI object.
  */
 export type FsLocation = string | Uri
-
-export interface FsWatcher {
-	on(eventName: 'ready', listener: () => unknown): this
-	once(eventName: 'ready', listener: () => unknown): this
-
-	on(eventName: 'add', listener: (uri: string) => unknown): this
-	once(eventName: 'add', listener: (uri: string) => unknown): this
-
-	on(eventName: 'change', listener: (uri: string) => unknown): this
-	once(eventName: 'change', listener: (uri: string) => unknown): this
-
-	on(eventName: 'unlink', listener: (uri: string) => unknown): this
-	once(eventName: 'unlink', listener: (uri: string) => unknown): this
-
-	on(eventName: 'error', listener: (error: Error) => unknown): this
-	once(eventName: 'error', listener: (error: Error) => unknown): this
-
-	close(): Promise<void>
-}

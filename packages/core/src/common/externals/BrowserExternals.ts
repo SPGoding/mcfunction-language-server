@@ -6,13 +6,7 @@ import type {
 	ExternalDownloaderOptions,
 	RemoteUriString,
 } from './downloader.js'
-import type {
-	ExternalEventEmitter,
-	ExternalFileSystem,
-	Externals,
-	FsLocation,
-	FsWatcher,
-} from './index.js'
+import type { ExternalEventEmitter, ExternalFileSystem, Externals, FsLocation } from './index.js'
 
 type Listener = (...args: unknown[]) => unknown
 export class BrowserEventEmitter implements ExternalEventEmitter {
@@ -69,24 +63,6 @@ class BrowserExternalDownloader implements ExternalDownloader {
 			return new Uint8Array(await res.arrayBuffer())
 		}
 	}
-}
-
-class BrowserFsWatcher implements FsWatcher {
-	on(event: string, listener: (...args: any[]) => unknown): this {
-		if (event === 'ready') {
-			listener()
-		}
-		return this
-	}
-
-	once(event: unknown, listener: (...args: any[]) => unknown): this {
-		if (event === 'ready') {
-			listener()
-		}
-		return this
-	}
-
-	async close(): Promise<void> {}
 }
 
 class BrowserFileSystem implements ExternalFileSystem {
@@ -148,9 +124,6 @@ class BrowserFileSystem implements ExternalFileSystem {
 		}
 		delete this.states[location]
 		this.saveStates()
-	}
-	watch(_locations: FsLocation[]): FsWatcher {
-		return new BrowserFsWatcher()
 	}
 	async writeFile(
 		location: FsLocation,

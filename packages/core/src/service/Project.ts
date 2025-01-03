@@ -1,7 +1,7 @@
 import * as micromatch from 'micromatch'
 import type { TextDocumentContentChangeEvent } from 'vscode-languageserver-textdocument'
 import { TextDocument } from 'vscode-languageserver-textdocument'
-import type { ExternalEventEmitter, Externals, FsWatcher, IntervalId } from '../common/index.js'
+import type { ExternalEventEmitter, Externals, IntervalId } from '../common/index.js'
 import {
 	bufferToString,
 	Logger,
@@ -33,6 +33,7 @@ import { LinterErrorReporter } from './ErrorReporter.js'
 import { ArchiveUriSupporter, FileService, FileUriSupporter } from './FileService.js'
 import type { RootUriString } from './fileUtil.js'
 import { fileUtil } from './fileUtil.js'
+import type { FsWatcher } from './FsWatcher.js'
 import { MetaRegistry } from './MetaRegistry.js'
 import { ProfilerFactory } from './Profiler.js'
 
@@ -73,6 +74,7 @@ export interface ProjectOptions {
 	 * File URIs to the roots of this project.
 	 */
 	projectRoots: RootUriString[]
+	projectRootsWatcher?: FsWatcher
 	symbols?: SymbolUtil
 }
 
@@ -171,9 +173,10 @@ export class Project implements ExternalEventEmitter {
 	readonly #initializers: readonly ProjectInitializer[]
 	#initPromise!: Promise<void>
 	#readyPromise!: Promise<void>
-	readonly #watchedFiles = new Set<string>()
-	#watcher!: FsWatcher
-	#watcherReady = false
+	readonly #watcher: FsWatcher | undefined
+	get watchedFiles() {
+		return this.#watcher?.watchedFiles ?? new Set()
+	}
 
 	#isReady = false
 	get isReady(): boolean {
@@ -289,7 +292,7 @@ export class Project implements ExternalEventEmitter {
 	getTrackedFiles(): string[] {
 		const extensions: string[] = this.meta.getSupportedFileExtensions()
 		this.logger.info(`[Project#getTrackedFiles] Supported file extensions: ${extensions}`)
-		const supportedFiles = [...this.#dependencyFiles ?? [], ...this.#watchedFiles]
+		const supportedFiles = [...this.#dependencyFiles ?? [], ...this.watchedFiles]
 			.filter((file) => extensions.includes(fileUtil.extname(file) ?? ''))
 		this.logger.info(
 			`[Project#getTrackedFiles] Listed ${supportedFiles.length} supported files`,
@@ -309,6 +312,7 @@ export class Project implements ExternalEventEmitter {
 			logger = Logger.create(),
 			profilers = ProfilerFactory.noop(),
 			projectRoots,
+			projectRootsWatcher,
 		}: ProjectOptions,
 	) {
 		this.#cacheRoot = cacheRoot
@@ -320,6 +324,7 @@ export class Project implements ExternalEventEmitter {
 		this.logger = logger
 		this.profilers = profilers
 		this.projectRoots = projectRoots
+		this.#watcher = projectRootsWatcher
 
 		this.cacheService = new CacheService(cacheRoot, this)
 		this.#configService = new ConfigService(this, defaultConfig)
@@ -480,43 +485,38 @@ export class Project implements ExternalEventEmitter {
 		}
 		const listProjectFiles = () =>
 			new Promise<void>((resolve) => {
-				if (this.projectRoots.length === 0) {
-					resolve()
-					return
+				if (!this.#watcher) {
+					return resolve()
 				}
-				this.#watchedFiles.clear()
-				this.#watcherReady = false
-				this.#watcher = this.externals.fs.watch(this.projectRoots, {
-					usePolling: this.config.env.useFilePolling,
-				}).once('ready', () => {
-					this.#watcherReady = true
-					resolve()
-				}).on('add', (uri) => {
-					if (this.shouldExclude(uri)) {
-						return
-					}
-					this.#watchedFiles.add(uri)
-					if (this.#watcherReady) {
+
+				this.#watcher
+					.on('add', (uri) => {
+						if (this.shouldExclude(uri)) {
+							return
+						}
 						this.emit('fileCreated', { uri })
-					}
-				}).on('change', (uri) => {
-					if (this.shouldExclude(uri)) {
-						return
-					}
-					if (this.#watcherReady) {
+					})
+					.on('change', (uri) => {
+						if (this.shouldExclude(uri)) {
+							return
+						}
 						this.emit('fileModified', { uri })
-					}
-				}).on('unlink', (uri) => {
-					if (this.shouldExclude(uri)) {
-						return
-					}
-					this.#watchedFiles.delete(uri)
-					if (this.#watcherReady) {
+					})
+					.on('unlink', (uri) => {
+						if (this.shouldExclude(uri)) {
+							return
+						}
 						this.emit('fileDeleted', { uri })
-					}
-				}).on('error', (e) => {
-					this.logger.error('[Project] [chokidar]', e)
-				})
+					})
+					.on('error', (e) => {
+						this.logger.error('[Project#watcher]', e)
+					})
+
+				if (this.#watcher.isReady) {
+					resolve()
+				} else {
+					this.#watcher.on('ready', resolve)
+				}
 			})
 		const ready = async () => {
 			await this.init()
@@ -612,13 +612,12 @@ export class Project implements ExternalEventEmitter {
 	 */
 	async close(): Promise<void> {
 		clearInterval(this.#cacheSaverIntervalId)
-		await this.#watcher.close()
+		await this.#watcher?.close()
 		await this.cacheService.save()
 	}
 
 	async restart(): Promise<void> {
 		try {
-			await this.#watcher.close()
 			this.#bindingInProgressUris.clear()
 			this.#symbolUpToDateUris.clear()
 			this.setReadyPromise()
@@ -989,11 +988,11 @@ export class Project implements ExternalEventEmitter {
 	private shouldRemove(uri: string): boolean {
 		return (!this.#clientManagedUris.has(uri)
 			&& !this.#dependencyFiles?.has(uri)
-			&& !this.#watchedFiles.has(uri))
+			&& !this.watchedFiles.has(uri))
 	}
 
 	private isOnlyWatched(uri: string): boolean {
-		return (this.#watchedFiles.has(uri)
+		return (this.watchedFiles.has(uri)
 			&& !this.#clientManagedUris.has(uri)
 			&& !this.#dependencyFiles?.has(uri))
 	}
