@@ -43,7 +43,7 @@ Planned.
 
 Main article: link:./user/config[Config]
 
-== Mcdoc Specification
+== Mcdoc
 
 Main article: link:./user/mcdoc[Mcdoc]
 
